@@ -1,0 +1,3 @@
+master_key: "my-master-key"
+listen_addr: ":9000"
+db_path: "data/"
