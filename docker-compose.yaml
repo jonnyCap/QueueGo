@@ -1,0 +1,9 @@
+version: "3.8"
+
+services:
+  broker:
+    build: .
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./config.yaml:/app/config.yaml
