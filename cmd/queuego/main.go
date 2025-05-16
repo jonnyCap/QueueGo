@@ -18,7 +18,7 @@ type Config struct {
 }
 
 func loadConfig() Config {
-	f, err := os.Open("config.yaml")
+	f, err := os.Open("configs/config.yaml")
 	if err != nil {
 		log.Fatalf("failed to open config: %v", err)
 	}
