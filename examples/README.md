@@ -12,6 +12,8 @@ This directory contains complete, runnable example applications demonstrating va
 | [**Chat Room**](./chat-room/) | Multi-user broadcast terminal chat | Real-time bi-directional messaging, topic multiplexing |
 | [**Order Processing**](./order-processing/) | E-commerce microservices event streaming | Decoupled background workers, live key rotation (`ROTATE_KEY` / `KEY_UPDATE`) |
 | [**IoT Telemetry**](./iot-telemetry/) | Edge sensor telemetry streaming & live dashboard | Low-bandwidth binary framing, high-frequency metrics ingestion |
+| [**Python Client**](./python-client/) | Real-time Python event producer & consumer | Zero-dependency async/sync Blink Python SDK integration |
+| [**Node.js Client**](./js-client/) | Event-driven JavaScript publisher & subscriber | Zero-dependency Node.js Blink SDK integration |
 
 ---
 

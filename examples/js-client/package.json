@@ -1,0 +1,12 @@
+{
+  "name": "queuego-js-client-example",
+  "version": "1.0.0",
+  "description": "Node.js example for QueueGo and Blink protocol",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": ["queuego", "blink", "example"],
+  "author": "Jonathan Maier",
+  "license": "MIT"
+}
