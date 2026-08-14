@@ -5,6 +5,7 @@ import (
 	"net"
 
 	blink "github.com/jonnycap/blink/go"
+	"github.com/jonnycap/queuego/internal/auth"
 )
 
 func main() {
@@ -17,17 +18,25 @@ func main() {
 
 	log.Println("[backend] Connected to broker")
 
-	// Example hardcoded JWT (in a real app you'd load/generate this)
-	jwt := []byte("my-backend-jwt")
+	topicName := "orders"
+	topicID := blink.HashTopic(topicName)
+	queueKey := "secret-orders-key"
+	masterKey := "my-master-key" // Matches config.yaml
 
-	// Subscribe to a topic (e.g., topicID 1)
-	sub := blink.NewSubscribeFrame(jwt, 1)
+	// Generate a valid JWT with subscribe permission
+	jwtToken, err := auth.GenerateToken(masterKey, "backend-service", queueKey, "subscribe")
+	if err != nil {
+		log.Fatalf("failed to generate JWT: %v", err)
+	}
+
+	// Subscribe to the topic
+	sub := blink.NewSubscribeFrame([]byte(jwtToken), topicID)
 	if err := blink.SendFrame(conn, sub); err != nil {
 		log.Fatalf("subscribe failed: %v", err)
 	}
-	log.Println("[backend] Subscribed to topic 1")
+	log.Printf("[backend] Subscribed to topic %q (ID: %d)", topicName, topicID)
 
-	// Listen for messages
+	// Listen for incoming messages and key updates
 	for {
 		frame, err := blink.ReadFrame(conn)
 		if err != nil {
@@ -37,8 +46,10 @@ func main() {
 		switch f := frame.(type) {
 		case *blink.MessageFrame:
 			log.Printf("[backend] Received message: %s", string(f.Payload))
-			// Process the message (e.g., update DB, trigger job, etc.)
 			process(f.TopicID, f.Payload)
+
+		case *blink.KeyUpdateFrame:
+			log.Printf("[backend] Received KeyUpdate for topic %d, new key: %s", f.TopicID, string(f.NewKey))
 
 		default:
 			log.Printf("[backend] Ignored frame type: %T", f)
@@ -48,5 +59,5 @@ func main() {
 
 func process(topicID uint32, payload []byte) {
 	log.Printf("[backend] Processing message from topic %d: %s", topicID, payload)
-	// TODO: Replace this with actual business logic
 }
+

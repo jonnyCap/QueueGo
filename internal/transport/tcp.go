@@ -3,10 +3,22 @@ package tcp
 import (
 	"log"
 	"net"
+	"sync"
 
 	blink "github.com/jonnycap/blink/go"
 	"github.com/jonnycap/queuego/internal/broker"
 )
+
+type safeConn struct {
+	net.Conn
+	mu sync.Mutex
+}
+
+func (s *safeConn) Write(b []byte) (n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Conn.Write(b)
+}
 
 func StartServer(addr string, b *broker.Broker) error {
 	l, err := net.Listen("tcp", addr)
@@ -16,42 +28,57 @@ func StartServer(addr string, b *broker.Broker) error {
 	defer l.Close()
 	log.Printf("listening on %s", addr)
 
+	return Serve(l, b)
+}
+
+func Serve(l net.Listener, b *broker.Broker) error {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
-			log.Printf("accept error: %v", err)
-			continue
+			return err
 		}
 		go handleConn(conn, b)
 	}
 }
 
 func handleConn(conn net.Conn, b *broker.Broker) {
-	defer conn.Close()
+	sConn := &safeConn{Conn: conn}
+	defer func() {
+		b.RemoveSubscriber(sConn)
+		sConn.Close()
+	}()
+
 	for {
-		frame, err := blink.ReadFrame(conn)
+		frame, err := blink.ReadFrame(sConn)
 		if err != nil {
-			log.Printf("read frame error: %v", err)
 			return
 		}
 		switch f := frame.(type) {
 		case *blink.CreateFrame:
-			topicID, err := b.CreateTopic(f)
-			if err != nil {
+			if topicID, err := b.CreateTopic(f); err != nil {
 				log.Println("create error:", err)
 			} else {
-				log.Println("created topic", topicID)
+				log.Printf("created topic %q (ID: %d)", f.TopicName, topicID)
 			}
 		case *blink.SubscribeFrame:
-			b.Subscribe(f, conn)
+			if err := b.Subscribe(f, sConn); err != nil {
+				log.Println("subscribe error:", err)
+			}
 		case *blink.UnsubscribeFrame:
-			b.Unsubscribe(f, conn)
+			if err := b.Unsubscribe(f, sConn); err != nil {
+				log.Println("unsubscribe error:", err)
+			}
 		case *blink.PublishFrame:
-			b.Publish(f)
+			if err := b.Publish(f); err != nil {
+				log.Println("publish error:", err)
+			}
 		case *blink.RotateKeyFrame:
-			b.RotateKey(f)
+			if err := b.RotateKey(f); err != nil {
+				log.Println("rotate key error:", err)
+			}
 		default:
 			log.Printf("unsupported frame type: %T", f)
 		}
 	}
 }
+
