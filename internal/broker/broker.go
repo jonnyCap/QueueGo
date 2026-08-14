@@ -9,12 +9,73 @@ import (
 	"github.com/jonnycap/queuego/internal/auth"
 )
 
+const DefaultQueueSize = 1024
+
+type subQueue struct {
+	writer io.Writer
+	queue  chan blink.Frame
+	done   chan struct{}
+	closed bool
+	mu     sync.Mutex
+}
+
+func newSubQueue(w io.Writer) *subQueue {
+	sq := &subQueue{
+		writer: w,
+		queue:  make(chan blink.Frame, DefaultQueueSize),
+		done:   make(chan struct{}),
+	}
+	go sq.pump()
+	return sq
+}
+
+func (sq *subQueue) pump() {
+	for {
+		select {
+		case <-sq.done:
+			return
+		case frame, ok := <-sq.queue:
+			if !ok {
+				return
+			}
+			if err := blink.SendFrame(sq.writer, frame); err != nil {
+				sq.close()
+				return
+			}
+		}
+	}
+}
+
+func (sq *subQueue) push(frame blink.Frame) bool {
+	sq.mu.Lock()
+	defer sq.mu.Unlock()
+	if sq.closed {
+		return false
+	}
+	select {
+	case sq.queue <- frame:
+		return true
+	default:
+		// Queue full (slow consumer) - drop message
+		return false
+	}
+}
+
+func (sq *subQueue) close() {
+	sq.mu.Lock()
+	defer sq.mu.Unlock()
+	if !sq.closed {
+		sq.closed = true
+		close(sq.done)
+	}
+}
+
 type Topic struct {
 	Name        string
 	ID          uint32
 	Flags       byte
 	Key         string
-	Subscribers map[io.Writer]struct{}
+	Subscribers map[io.Writer]*subQueue
 	mu          sync.RWMutex
 }
 
@@ -58,7 +119,7 @@ func (b *Broker) CreateTopic(frame *blink.CreateFrame) (uint32, error) {
 		ID:          topicID,
 		Flags:       frame.Flags,
 		Key:         queueKey,
-		Subscribers: make(map[io.Writer]struct{}),
+		Subscribers: make(map[io.Writer]*subQueue),
 	}
 
 	return topicID, nil
@@ -82,7 +143,9 @@ func (b *Broker) Subscribe(frame *blink.SubscribeFrame, w io.Writer) error {
 	}
 
 	topic.mu.Lock()
-	topic.Subscribers[w] = struct{}{}
+	if _, exists := topic.Subscribers[w]; !exists {
+		topic.Subscribers[w] = newSubQueue(w)
+	}
 	topic.mu.Unlock()
 
 	return nil
@@ -106,13 +169,16 @@ func (b *Broker) Unsubscribe(frame *blink.UnsubscribeFrame, w io.Writer) error {
 	}
 
 	topic.mu.Lock()
-	delete(topic.Subscribers, w)
+	if sq, ok := topic.Subscribers[w]; ok {
+		sq.close()
+		delete(topic.Subscribers, w)
+	}
 	topic.mu.Unlock()
 
 	return nil
 }
 
-// Publish delivers a message to all active subscribers if the JWT is valid and has "publish" permission.
+// Publish delivers a message to all active subscribers asynchronously if the JWT is valid and has "publish" permission.
 func (b *Broker) Publish(frame *blink.PublishFrame) error {
 	b.mu.RLock()
 	topic, ok := b.topics[frame.TopicID]
@@ -135,19 +201,11 @@ func (b *Broker) Publish(frame *blink.PublishFrame) error {
 
 	msg := blink.NewMessageFrame(frame.TopicID, frame.Payload)
 
-	topic.mu.Lock()
-	defer topic.mu.Unlock()
-
-	var deadSubscribers []io.Writer
-	for subWriter := range topic.Subscribers {
-		if err := blink.SendFrame(subWriter, msg); err != nil {
-			deadSubscribers = append(deadSubscribers, subWriter)
-		}
+	topic.mu.RLock()
+	for _, sq := range topic.Subscribers {
+		sq.push(msg)
 	}
-
-	for _, dead := range deadSubscribers {
-		delete(topic.Subscribers, dead)
-	}
+	topic.mu.RUnlock()
 
 	return nil
 }
@@ -171,15 +229,8 @@ func (b *Broker) RotateKey(frame *blink.RotateKeyFrame) error {
 	topic.Key = string(frame.NewKey)
 
 	keyUpdate := blink.NewKeyUpdateFrame(frame.TopicID, frame.NewKey)
-	var deadSubscribers []io.Writer
-	for subWriter := range topic.Subscribers {
-		if err := blink.SendFrame(subWriter, keyUpdate); err != nil {
-			deadSubscribers = append(deadSubscribers, subWriter)
-		}
-	}
-
-	for _, dead := range deadSubscribers {
-		delete(topic.Subscribers, dead)
+	for _, sq := range topic.Subscribers {
+		sq.push(keyUpdate)
 	}
 
 	return nil
@@ -192,7 +243,10 @@ func (b *Broker) RemoveSubscriber(w io.Writer) {
 
 	for _, topic := range b.topics {
 		topic.mu.Lock()
-		delete(topic.Subscribers, w)
+		if sq, ok := topic.Subscribers[w]; ok {
+			sq.close()
+			delete(topic.Subscribers, w)
+		}
 		topic.mu.Unlock()
 	}
 }

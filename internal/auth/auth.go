@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -11,12 +12,26 @@ import (
 var (
 	masterKeyMu sync.RWMutex
 	masterKey   string
+	tokenCache  sync.Map // string -> cachedToken
 )
+
+type cachedToken struct {
+	claims    *Claims
+	expiresAt time.Time
+}
+
+func ClearTokenCache() {
+	tokenCache.Range(func(key, value interface{}) bool {
+		tokenCache.Delete(key)
+		return true
+	})
+}
 
 func SetMasterKey(key string) {
 	masterKeyMu.Lock()
 	defer masterKeyMu.Unlock()
 	masterKey = key
+	ClearTokenCache()
 }
 
 func GetMasterKey() string {
@@ -40,6 +55,14 @@ func ParseToken(tokenBytes []byte) (*Claims, error) {
 	}
 
 	tokenStr := string(tokenBytes)
+	if val, ok := tokenCache.Load(tokenStr); ok {
+		cached := val.(cachedToken)
+		if time.Now().Before(cached.expiresAt) {
+			return cached.claims, nil
+		}
+		tokenCache.Delete(tokenStr)
+	}
+
 	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
@@ -81,6 +104,12 @@ func ParseToken(tokenBytes []byte) (*Claims, error) {
 			claims.Permissions = append(claims.Permissions, p)
 		}
 	}
+
+	expTime := time.Now().Add(10 * time.Minute)
+	if exp, err := mapClaims.GetExpirationTime(); err == nil && exp != nil {
+		expTime = exp.Time
+	}
+	tokenCache.Store(tokenStr, cachedToken{claims: claims, expiresAt: expTime})
 
 	return claims, nil
 }
