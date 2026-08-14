@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"bufio"
 	"log"
 	"net"
 	"sync"
@@ -48,8 +49,9 @@ func handleConn(conn net.Conn, b *broker.Broker) {
 		sConn.Close()
 	}()
 
+	reader := bufio.NewReader(sConn)
 	for {
-		frame, err := blink.ReadFrame(sConn)
+		frame, err := blink.ParseFrame(reader)
 		if err != nil {
 			return
 		}

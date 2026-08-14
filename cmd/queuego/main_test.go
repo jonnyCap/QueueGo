@@ -100,3 +100,88 @@ func TestEndToEndBlinkServer(t *testing.T) {
 		t.Fatal("timed out waiting for MESSAGE frame")
 	}
 }
+
+func TestEndToEndMultiMessageStream(t *testing.T) {
+	masterKey := "multi-msg-master-key"
+	auth.SetMasterKey(masterKey)
+	b := broker.NewBroker(nil)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		_ = tcp.Serve(listener, b)
+	}()
+
+	addr := listener.Addr().String()
+
+	// Connect Subscriber
+	subConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("failed to connect subscriber: %v", err)
+	}
+	defer subConn.Close()
+
+	// Connect Publisher
+	pubConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("failed to connect publisher: %v", err)
+	}
+	defer pubConn.Close()
+
+	queueKey := "stream-queue-key"
+	topicName := "stream-topic"
+	topicID := blink.HashTopic(topicName)
+
+	createToken, _ := auth.GenerateToken(masterKey, "admin", queueKey, "create")
+	subToken, _ := auth.GenerateToken(masterKey, "sub", queueKey, "subscribe")
+	pubToken, _ := auth.GenerateToken(masterKey, "pub", queueKey, "publish")
+
+	// Create topic & subscribe
+	if err := blink.SendFrame(subConn, blink.NewCreateFrame([]byte(createToken), topicName, 0x00)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	if err := blink.SendFrame(subConn, blink.NewSubscribeFrame([]byte(subToken), topicID)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	msgCount := 25
+	receivedChan := make(chan int, msgCount)
+
+	go func() {
+		for i := 0; i < msgCount; i++ {
+			frame, err := blink.ReadFrame(subConn)
+			if err != nil {
+				return
+			}
+			if msg, ok := frame.(*blink.MessageFrame); ok {
+				if msg.TopicID == topicID {
+					receivedChan <- len(msg.Payload)
+				}
+			}
+		}
+	}()
+
+	// Send rapid consecutive publish frames on publisher connection
+	for i := 0; i < msgCount; i++ {
+		payload := []byte(time.Now().Format(time.RFC3339Nano))
+		if err := blink.SendFrame(pubConn, blink.NewPublishFrame([]byte(pubToken), topicID, payload)); err != nil {
+			t.Fatalf("failed to publish frame %d: %v", i, err)
+		}
+	}
+
+	// Verify all messages received
+	for i := 0; i < msgCount; i++ {
+		select {
+		case <-receivedChan:
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out waiting for message %d of %d", i+1, msgCount)
+		}
+	}
+}

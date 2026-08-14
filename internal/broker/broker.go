@@ -45,9 +45,11 @@ func (b *Broker) CreateTopic(frame *blink.CreateFrame) (uint32, error) {
 
 	if existing, ok := b.topics[topicID]; ok {
 		existing.mu.Lock()
-		existing.Key = queueKey
+		defer existing.mu.Unlock()
+		if existing.Key != queueKey {
+			return 0, errors.New("topic already exists with a different key")
+		}
 		existing.Flags = frame.Flags
-		existing.mu.Unlock()
 		return topicID, nil
 	}
 

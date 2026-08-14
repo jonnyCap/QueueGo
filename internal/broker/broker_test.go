@@ -161,3 +161,59 @@ func TestBrokerPubSubAndKeyRotation(t *testing.T) {
 	b.RemoveSubscriber(subWriter)
 }
 
+func TestCreateTopicSecurityAndIdempotency(t *testing.T) {
+	masterKey := "security-test-master-key"
+	auth.SetMasterKey(masterKey)
+	b := NewBroker(nil)
+
+	topicName := "secure-queue"
+	topicID := blink.HashTopic(topicName)
+	originalKey := "original-secret-key"
+	attackerKey := "attacker-secret-key"
+
+	// 1. Legitimate creator registers the topic
+	validToken, err := auth.GenerateToken(masterKey, "legit-owner", originalKey, "create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := b.CreateTopic(blink.NewCreateFrame([]byte(validToken), topicName, 0x00))
+	if err != nil {
+		t.Fatalf("initial CreateTopic failed: %v", err)
+	}
+	if id != topicID {
+		t.Fatalf("expected topic ID %d, got %d", topicID, id)
+	}
+
+	// 2. Legitimate creator creates again with same key (idempotent success)
+	id2, err := b.CreateTopic(blink.NewCreateFrame([]byte(validToken), topicName, 0x00))
+	if err != nil {
+		t.Fatalf("idempotent CreateTopic failed: %v", err)
+	}
+	if id2 != topicID {
+		t.Fatalf("expected topic ID %d, got %d", topicID, id2)
+	}
+
+	// 3. Attacker attempts to overwrite the topic key with their own key -> MUST FAIL
+	attackerToken, err := auth.GenerateToken(masterKey, "attacker", attackerKey, "create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = b.CreateTopic(blink.NewCreateFrame([]byte(attackerToken), topicName, 0x00))
+	if err == nil {
+		t.Fatal("expected CreateTopic with mismatched key on existing topic to be rejected, but it succeeded")
+	}
+
+	// 4. Verify topic is still accessible with original key
+	subToken, err := auth.GenerateToken(masterKey, "subscriber", originalKey, "subscribe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subReader, subWriter := net.Pipe()
+	defer subReader.Close()
+	defer subWriter.Close()
+
+	if err := b.Subscribe(blink.NewSubscribeFrame([]byte(subToken), topicID), subWriter); err != nil {
+		t.Fatalf("expected subscribe with original key to succeed, got: %v", err)
+	}
+}
+
