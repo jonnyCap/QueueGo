@@ -25,6 +25,8 @@ github.com/jonnycap/blink/go v0.0.0-20260814074106-31191ce45d43 h1:i2OHMKfMgWSOY
 github.com/jonnycap/blink/go v0.0.0-20260814074106-31191ce45d43/go.mod h1:8O9bOuYrbaHTrM8iCeKSmO/mmGBQh96Ki9GieWR1J0o=
 github.com/jonnycap/blink/go v0.0.0-20260814080308-104fe2c6cb7a h1:LU5oPs4fB5sQdieZ2Bgis+1BZb/lEIuXy77yOgqQs0w=
 github.com/jonnycap/blink/go v0.0.0-20260814080308-104fe2c6cb7a/go.mod h1:8O9bOuYrbaHTrM8iCeKSmO/mmGBQh96Ki9GieWR1J0o=
+github.com/jonnycap/blink/go v0.0.0-20260814085531-58ffd071d8d7 h1:hN6yQ1gqRcY0Txc9QaFmCPD5rMBRtoInfyH+pBqC9yU=
+github.com/jonnycap/blink/go v0.0.0-20260814085531-58ffd071d8d7/go.mod h1:8O9bOuYrbaHTrM8iCeKSmO/mmGBQh96Ki9GieWR1J0o=
 github.com/klauspost/compress v1.18.0 h1:c/Cqfb0r+Yi+JtIEq73FWXVkRonBlf0CRNYc8Zttxdo=
 github.com/klauspost/compress v1.18.0/go.mod h1:2Pp+KzxcywXVXMr50+X0Q/Lsb43OQHYWRCY2AiWywWQ=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=

@@ -1,3 +1,12 @@
 master_key: "my-master-key"
 listen_addr: "127.0.0.1:9000"
 db_path: "data/"
+
+# Observability HTTP endpoint (health checks and Prometheus metrics)
+http_addr: "127.0.0.1:9001"
+
+# TLS encryption in transit (optional)
+tls:
+  enabled: false
+  cert_file: ""
+  key_file: ""

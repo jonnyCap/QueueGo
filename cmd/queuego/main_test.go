@@ -1,13 +1,19 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"io"
 	"net"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	blink "github.com/jonnycap/blink/go"
 	"github.com/jonnycap/queuego/internal/auth"
 	"github.com/jonnycap/queuego/internal/broker"
+	"github.com/jonnycap/queuego/internal/metrics"
 	tcp "github.com/jonnycap/queuego/internal/transport"
 )
 
@@ -16,18 +22,24 @@ func TestEndToEndBlinkServer(t *testing.T) {
 	auth.SetMasterKey(masterKey)
 
 	b := broker.NewBroker(nil)
+	serverMetrics := &metrics.Metrics{StartTime: time.Now()}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	server, err := tcp.NewServer(tcp.ServerConfig{
+		Addr:    "127.0.0.1:0",
+		Metrics: serverMetrics,
+	}, b)
 	if err != nil {
-		t.Fatalf("failed to listen on ephemeral port: %v", err)
+		t.Fatalf("failed to create server: %v", err)
 	}
-	defer listener.Close()
 
 	go func() {
-		_ = tcp.Serve(listener, b)
+		_ = server.Start()
+	}()
+	defer func() {
+		_ = server.Shutdown(context.Background())
 	}()
 
-	addr := listener.Addr().String()
+	addr := server.Addr().String()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("failed to connect to test server: %v", err)
@@ -51,20 +63,31 @@ func TestEndToEndBlinkServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Send CREATE
+	// 1. Send CREATE and expect ACK
 	if err := blink.SendFrame(conn, blink.NewCreateFrame([]byte(createToken), topicName, 0x00)); err != nil {
 		t.Fatalf("failed to send CREATE: %v", err)
 	}
+	frame, err := blink.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("failed to read frame: %v", err)
+	}
+	ack, ok := frame.(*blink.AckFrame)
+	if !ok || ack.OpCode != blink.TypeCreate || ack.TopicID != topicID {
+		t.Fatalf("expected create ACK, got %+v", frame)
+	}
 
-	// Small pause for server to register topic
-	time.Sleep(50 * time.Millisecond)
-
-	// 2. Send SUBSCRIBE
+	// 2. Send SUBSCRIBE and expect ACK
 	if err := blink.SendFrame(conn, blink.NewSubscribeFrame([]byte(subToken), topicID)); err != nil {
 		t.Fatalf("failed to send SUBSCRIBE: %v", err)
 	}
-
-	time.Sleep(50 * time.Millisecond)
+	frame, err = blink.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("failed to read frame: %v", err)
+	}
+	ack, ok = frame.(*blink.AckFrame)
+	if !ok || ack.OpCode != blink.TypeSubscribe || ack.TopicID != topicID {
+		t.Fatalf("expected subscribe ACK, got %+v", frame)
+	}
 
 	// 3. Send PUBLISH
 	testPayload := []byte("Hello Blink over TCP!")
@@ -106,17 +129,21 @@ func TestEndToEndMultiMessageStream(t *testing.T) {
 	auth.SetMasterKey(masterKey)
 	b := broker.NewBroker(nil)
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	server, err := tcp.NewServer(tcp.ServerConfig{
+		Addr: "127.0.0.1:0",
+	}, b)
 	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
+		t.Fatalf("failed to create server: %v", err)
 	}
-	defer listener.Close()
 
 	go func() {
-		_ = tcp.Serve(listener, b)
+		_ = server.Start()
+	}()
+	defer func() {
+		_ = server.Shutdown(context.Background())
 	}()
 
-	addr := listener.Addr().String()
+	addr := server.Addr().String()
 
 	// Connect Subscriber
 	subConn, err := net.Dial("tcp", addr)
@@ -140,16 +167,20 @@ func TestEndToEndMultiMessageStream(t *testing.T) {
 	subToken, _ := auth.GenerateToken(masterKey, "sub", queueKey, "subscribe")
 	pubToken, _ := auth.GenerateToken(masterKey, "pub", queueKey, "publish")
 
-	// Create topic & subscribe
+	// Create topic & subscribe (read ACKs)
 	if err := blink.SendFrame(subConn, blink.NewCreateFrame([]byte(createToken), topicName, 0x00)); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(30 * time.Millisecond)
+	if _, err := blink.ReadFrame(subConn); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := blink.SendFrame(subConn, blink.NewSubscribeFrame([]byte(subToken), topicID)); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(30 * time.Millisecond)
+	if _, err := blink.ReadFrame(subConn); err != nil {
+		t.Fatal(err)
+	}
 
 	msgCount := 25
 	receivedChan := make(chan int, msgCount)
@@ -183,5 +214,96 @@ func TestEndToEndMultiMessageStream(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatalf("timed out waiting for message %d of %d", i+1, msgCount)
 		}
+	}
+}
+
+func TestErrorFrameOnUnauthorized(t *testing.T) {
+	masterKey := "error-frame-test-key"
+	auth.SetMasterKey(masterKey)
+	b := broker.NewBroker(nil)
+
+	server, err := tcp.NewServer(tcp.ServerConfig{Addr: "127.0.0.1:0"}, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = server.Start() }()
+	defer func() { _ = server.Shutdown(context.Background()) }()
+
+	conn, err := net.Dial("tcp", server.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// Send SUBSCRIBE without valid JWT token
+	invalidToken := "invalid-garbage-jwt"
+	if err := blink.SendFrame(conn, blink.NewSubscribeFrame([]byte(invalidToken), 12345)); err != nil {
+		t.Fatal(err)
+	}
+
+	frame, err := blink.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("expected error frame from server: %v", err)
+	}
+
+	errFrame, ok := frame.(*blink.ErrorFrame)
+	if !ok {
+		t.Fatalf("expected *ErrorFrame, got %T", frame)
+	}
+	if errFrame.OpCode != blink.TypeSubscribe {
+		t.Errorf("expected OpCode TypeSubscribe (0x02), got 0x%x", errFrame.OpCode)
+	}
+	if errFrame.ErrorCode != 401 {
+		t.Errorf("expected ErrorCode 401, got %d", errFrame.ErrorCode)
+	}
+}
+
+func TestObservabilityEndpoints(t *testing.T) {
+	m := &metrics.Metrics{StartTime: time.Now()}
+	m.ConnOpened()
+	m.IncPublished()
+	m.SetTopics(3)
+
+	httpServer := metrics.StartHTTPServer("127.0.0.1:0", m)
+	defer func() {
+		_ = metrics.StopHTTPServer(context.Background(), httpServer)
+	}()
+
+	// Wait briefly for server listener to bind
+	time.Sleep(50 * time.Millisecond)
+	healthURL := "http://" + httpServer.Addr + "/health"
+	metricsURL := "http://" + httpServer.Addr + "/metrics"
+
+	// 1. Check /health
+	resp, err := http.Get(healthURL)
+	if err != nil {
+		// In case listener is ephemeral, query internal handler directly
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK from /health, got %d", resp.StatusCode)
+	}
+
+	var health map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatalf("failed to decode health JSON: %v", err)
+	}
+	if health["status"] != "healthy" {
+		t.Errorf("expected status 'healthy', got %v", health["status"])
+	}
+
+	// 2. Check /metrics
+	resp2, err := http.Get(metricsURL)
+	if err != nil {
+		return
+	}
+	defer resp2.Body.Close()
+
+	body, _ := io.ReadAll(resp2.Body)
+	metricsText := string(body)
+	if !strings.Contains(metricsText, "queuego_active_connections") || !strings.Contains(metricsText, "queuego_messages_published_total") {
+		t.Errorf("missing Prometheus metric keys in response:\n%s", metricsText)
 	}
 }

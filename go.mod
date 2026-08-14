@@ -5,7 +5,7 @@ go 1.24.3
 require (
 	github.com/dgraph-io/badger/v4 v4.7.0
 	github.com/golang-jwt/jwt/v5 v5.2.2
-	github.com/jonnycap/blink/go v0.0.0-20260814080308-104fe2c6cb7a
+	github.com/jonnycap/blink/go v0.0.0-20260814085531-58ffd071d8d7
 	gopkg.in/yaml.v2 v2.4.0
 )
 
